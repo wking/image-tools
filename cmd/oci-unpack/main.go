@@ -22,11 +22,11 @@ import (
 
 	"github.com/opencontainers/image-tools/image"
 	"github.com/spf13/cobra"
+	"golang.org/x/net/context"
 )
 
 // supported unpack types
 var unpackTypes = []string{
-	image.TypeImageLayout,
 	image.TypeImage,
 }
 
@@ -56,8 +56,8 @@ func newUnpackCmd(stdout, stderr *log.Logger) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "unpack [src] [dest]",
-		Short: "Unpack an image or image source layout",
-		Long:  `Unpack the OCI image .tar file or OCI image layout directory present at [src] to the destination directory [dest].`,
+		Short: "Unpack an image",
+		Long:  `Unpack the OCI image present at [src] to the destination directory [dest].`,
 		Run:   v.Run,
 	}
 
@@ -86,6 +86,8 @@ func (v *unpackCmd) Run(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
+	ctx := context.Background()
+
 	if v.typ == "" {
 		typ, err := image.Autodetect(args[0])
 		if err != nil {
@@ -97,11 +99,8 @@ func (v *unpackCmd) Run(cmd *cobra.Command, args []string) {
 
 	var err error
 	switch v.typ {
-	case image.TypeImageLayout:
-		err = image.UnpackLayout(args[0], args[1], v.ref)
-
 	case image.TypeImage:
-		err = image.Unpack(args[0], args[1], v.ref)
+		err = image.Unpack(ctx, args[0], args[1], v.ref)
 	}
 
 	if err != nil {

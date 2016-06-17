@@ -18,58 +18,58 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/ioutil"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/opencontainers/image-spec/schema"
+	imagespecs "github.com/opencontainers/image-spec/specs-go"
 	"github.com/opencontainers/image-spec/specs-go/v1"
-	"github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/opencontainers/image-tools/image/cas"
+	runtimespecs "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
+	"golang.org/x/net/context"
 )
 
-type config v1.Image
+func findConfig(ctx context.Context, engine cas.Engine, descriptor *imagespecs.Descriptor) (config *v1.Image, err error) {
+	err = validateMediaType(descriptor.MediaType, []string{v1.MediaTypeImageConfig})
+	if err != nil {
+		return nil, errors.Wrap(err, "invalid config media type")
+	}
 
-func findConfig(w walker, d *descriptor) (*config, error) {
-	var c config
-	cpath := filepath.Join("blobs", d.algo(), d.hash())
+	err = validateDescriptor(ctx, engine, descriptor)
+	if err != nil {
+		return nil, errors.Wrap(err, "invalid config descriptor")
+	}
 
-	switch err := w.walk(func(path string, info os.FileInfo, r io.Reader) error {
-		if info.IsDir() || filepath.Clean(path) != cpath {
-			return nil
-		}
-		buf, err := ioutil.ReadAll(r)
-		if err != nil {
-			return errors.Wrapf(err, "%s: error reading config", path)
-		}
+	reader, err := engine.Get(ctx, descriptor.Digest)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to fetch %s", descriptor.Digest)
+	}
 
-		if err := schema.MediaTypeImageConfig.Validate(bytes.NewReader(buf)); err != nil {
-			return errors.Wrapf(err, "%s: config validation failed", path)
-		}
+	buf, err := ioutil.ReadAll(reader)
+	if err != nil {
+		return nil, errors.Wrapf(err, "%s: error reading manifest", descriptor.Digest)
+	}
 
-		if err := json.Unmarshal(buf, &c); err != nil {
-			return err
-		}
-		return errEOW
-	}); err {
-	case nil:
-		return nil, fmt.Errorf("%s: config not found", cpath)
-	case errEOW:
-		return &c, nil
-	default:
+	if err := schema.MediaTypeImageConfig.Validate(bytes.NewReader(buf)); err != nil {
+		return nil, errors.Wrapf(err, "%s: config validation failed", descriptor.Digest)
+	}
+
+	var c v1.Image
+	if err := json.Unmarshal(buf, &c); err != nil {
 		return nil, err
 	}
+
+	return &c, nil
 }
 
-func (c *config) runtimeSpec(rootfs string) (*specs.Spec, error) {
+func runtimeSpec(c *v1.Image, rootfs string) (*runtimespecs.Spec, error) {
 	if c.OS != "linux" {
 		return nil, fmt.Errorf("%s: unsupported OS", c.OS)
 	}
 
-	var s specs.Spec
+	var s runtimespecs.Spec
 	s.Version = "0.5.0"
 	// we should at least apply the default spec, otherwise this is totally useless
 	s.Process.Terminal = true
@@ -112,12 +112,12 @@ func (c *config) runtimeSpec(rootfs string) (*specs.Spec, error) {
 	swap := uint64(c.Config.MemorySwap)
 	shares := uint64(c.Config.CPUShares)
 
-	s.Linux.Resources = &specs.Resources{
-		CPU: &specs.CPU{
+	s.Linux.Resources = &runtimespecs.Resources{
+		CPU: &runtimespecs.CPU{
 			Shares: &shares,
 		},
 
-		Memory: &specs.Memory{
+		Memory: &runtimespecs.Memory{
 			Limit:       &mem,
 			Reservation: &mem,
 			Swap:        &swap,
@@ -127,7 +127,7 @@ func (c *config) runtimeSpec(rootfs string) (*specs.Spec, error) {
 	for vol := range c.Config.Volumes {
 		s.Mounts = append(
 			s.Mounts,
-			specs.Mount{
+			runtimespecs.Mount{
 				Destination: vol,
 				Type:        "bind",
 				Options:     []string{"rbind"},
