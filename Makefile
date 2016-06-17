@@ -3,6 +3,7 @@ export GO15VENDOREXPERIMENT
 
 EPOCH_TEST_COMMIT ?= v0.2.0
 TOOLS := \
+	oci-cas \
 	oci-create-runtime-bundle \
 	oci-image-validate \
 	oci-unpack
