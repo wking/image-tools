@@ -6,6 +6,7 @@ TOOLS := \
 	oci-cas \
 	oci-create-runtime-bundle \
 	oci-image-validate \
+	oci-refs \
 	oci-unpack
 
 default: help
