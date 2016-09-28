@@ -16,145 +16,74 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
-	"strings"
 
-	"github.com/opencontainers/image-spec/schema"
-	"github.com/opencontainers/image-tools/image"
-	"github.com/pkg/errors"
+	"github.com/mndrix/tap.go"
+	"github.com/opencontainers/image-spec/specs-go"
+	"github.com/opencontainers/image-tools/image/cas/layout"
+	"github.com/opencontainers/image-tools/validate"
 	"github.com/spf13/cobra"
 	"golang.org/x/net/context"
 )
 
-// supported validation types
-var validateTypes = []string{
-	image.TypeImage,
-	image.TypeManifest,
-	image.TypeManifestList,
-	image.TypeConfig,
-}
-
 type validateCmd struct {
-	stdout *log.Logger
-	stderr *log.Logger
-	typ    string // the type to validate, can be empty string
-	refs   []string
+	mediaType string // the type to validate, can be empty string
+	digest string
+	strict bool
 }
 
 func main() {
-	stdout := log.New(os.Stdout, "", 0)
-	stderr := log.New(os.Stderr, "", 0)
-
-	cmd := newValidateCmd(stdout, stderr)
-	if err := cmd.Execute(); err != nil {
-		stderr.Println(err)
-		os.Exit(1)
-	}
-}
-
-func newValidateCmd(stdout, stderr *log.Logger) *cobra.Command {
-	v := &validateCmd{
-		stdout: stdout,
-		stderr: stderr,
-	}
+	validator := &validateCmd{}
 
 	cmd := &cobra.Command{
-		Use:   "oci-image-validate FILE...",
-		Short: "Validate one or more image files",
-		Run:   v.Run,
+		Use:   "oci-image-validate PATH DIGEST",
+		Short: "Validate an OCI image",
+		Run:   validator.Run,
 	}
 
-	cmd.Flags().StringVar(
-		&v.typ, "type", "",
-		fmt.Sprintf(
-			`Type of the file to validate. If unset, oci-image-tool will try to auto-detect the type. One of "%s".`,
-			strings.Join(validateTypes, ","),
-		),
-	)
+	err := cmd.Execute()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
-	cmd.Flags().StringSliceVar(
-		&v.refs, "ref", nil,
-		`A set of refs pointing to the manifests to be validated. Each reference must be present in the "refs" subdirectory of the image. Only applicable if type is image.`,
-	)
-
-	return cmd
+	os.Exit(0)
 }
 
-func (v *validateCmd) Run(cmd *cobra.Command, args []string) {
-	if len(args) < 1 {
-		v.stderr.Printf("no files specified")
-		if err := cmd.Usage(); err != nil {
-			v.stderr.Println(err)
+func (validator *validateCmd) Run(cmd *cobra.Command, args []string) {
+	if len(args) != 2 {
+		err := cmd.Usage()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
 		}
 		os.Exit(1)
 	}
+
+	path := args[0]
+	validator.mediaType = "application/vnd.oci.image.layer.tar+gzip"
+	validator.digest = args[1]
+	validator.strict = true
 
 	ctx := context.Background()
 
-	var exitcode int
-	for _, arg := range args {
-		err := v.validatePath(ctx, arg)
-
-		if err == nil {
-			v.stdout.Printf("%s: OK", arg)
-			continue
-		}
-
-		var errs []error
-		if verr, ok := errors.Cause(err).(schema.ValidationError); ok {
-			errs = verr.Errs
-		} else if serr, ok := errors.Cause(err).(*schema.SyntaxError); ok {
-			v.stderr.Printf("%s:%d:%d: validation failed: %v", arg, serr.Line, serr.Col, err)
-			exitcode = 1
-			continue
-		} else {
-			v.stderr.Printf("%s: validation failed: %v", arg, err)
-			exitcode = 1
-			continue
-		}
-
-		for _, err := range errs {
-			v.stderr.Printf("%s: validation failed: %v", arg, err)
-		}
-
-		exitcode = 1
-	}
-
-	os.Exit(exitcode)
-}
-
-func (v *validateCmd) validatePath(ctx context.Context, name string) error {
-	var (
-		err error
-		typ = v.typ
-	)
-
-	if typ == "" {
-		if typ, err = image.Autodetect(name); err != nil {
-			return errors.Wrap(err, "unable to determine type")
-		}
-	}
-
-	switch typ {
-	case image.TypeImage:
-		return image.Validate(ctx, name, v.refs, v.stdout)
-	}
-
-	f, err := os.Open(name)
+	engine, err := layout.NewEngine(ctx, path)
 	if err != nil {
-		return errors.Wrap(err, "unable to open file")
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
-	defer f.Close()
+	defer engine.Close()
 
-	switch typ {
-	case image.TypeManifest:
-		return schema.MediaTypeManifest.Validate(f)
-	case image.TypeManifestList:
-		return schema.MediaTypeManifestList.Validate(f)
-	case image.TypeConfig:
-		return schema.MediaTypeImageConfig.Validate(f)
+	harness := tap.New()
+	harness.Header(0)
+
+	descriptor := &specs.Descriptor{
+		MediaType: validator.mediaType,
+		Digest: validator.digest,
+		Size: -1,
 	}
+	validate.Validate(ctx, harness, engine, descriptor, validator.strict)
 
-	return fmt.Errorf("type %q unimplemented", typ)
+	harness.AutoPlan()
+
+	return
 }
